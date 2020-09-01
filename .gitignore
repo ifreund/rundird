@@ -1,3 +1,5 @@
 zig-cache
-libxdg_runtime_dir.so.0.0.0
-xdg_runtime_dir.o
+libpam_rundird.so.0.0.0
+pam_rundird.o
+rundird
+rundird.o
