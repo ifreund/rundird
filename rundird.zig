@@ -24,8 +24,32 @@ const c = @cImport({
     @cInclude("sys/types.h");
 });
 
+pub const io_mode = .evented;
+pub const event_loop_mode = .single_threaded;
+
+const gpa = std.heap.c_allocator;
+
 const socket_path = "/run/rundird.sock";
 const rundir_parent = "/run/user";
+
+// Large enough to hold any runtime dir path
+var buf = [1]u8{undefined} ** std.fmt.count("{}/{}", .{ rundir_parent, std.math.maxInt(c.uid_t) });
+
+const Session = struct {
+    uid: c.uid_t,
+    open_count: u32,
+};
+
+const Context = struct {
+    connection: std.fs.File,
+    frame: @Frame(handleConnection),
+    // Seems like this needs to be intrusive to avoid a circular dependency
+    // of types.
+    node: std.SinglyLinkedList(void).Node,
+};
+
+var sessions = std.SinglyLinkedList(Session){};
+var free_list = std.SinglyLinkedList(void){};
 
 pub fn main() !void {
     // This allows us to setuid() and create rundirs with the correct owner
@@ -36,65 +60,97 @@ pub fn main() !void {
     var server = std.net.StreamServer.init(.{});
     defer server.deinit();
 
-    const addr = try std.net.Address.initUnix(socket_path);
+    try server.listen(try std.net.Address.initUnix(socket_path));
 
-    try server.listen(addr);
-
-    var buf = [1]u8{undefined} ** std.fmt.count("{}/{}", .{ rundir_parent, std.math.maxInt(c.uid_t) });
-
-    var sessions = std.ArrayList(struct {
-        uid: c.uid_t,
-        open_count: u32,
-    }).init(std.heap.c_allocator);
-
-    std.debug.warn("waiting for connections...\n", .{});
+    std.log.info("waiting for connections...", .{});
     while (true) {
         // TODO: we can probably continue on error in most cases
         const con = try server.accept();
-        defer con.file.close();
 
-        const reader = con.file.inStream();
-        const message_type = try reader.readByte();
-        const uid = try reader.readIntNative(c.uid_t);
+        var context = try gpa.create(Context);
+        context.* = .{
+            .connection = con.file,
+            .frame = undefined,
+            .node = undefined,
+        };
 
-        switch (message_type) {
-            'O' => {
-                for (sessions.items) |*session| {
-                    if (uid == session.uid) {
-                        session.open_count += 1;
-                        std.debug.warn("user {} has {} open sessions\n", .{ uid, session.open_count });
-                        break;
-                    }
-                } else {
-                    try sessions.ensureCapacity(sessions.items.len + 1);
-                    const path = std.fmt.bufPrint(&buf, "{}/{}", .{ rundir_parent, uid }) catch unreachable;
+        context.frame = async handleConnection(context);
 
-                    std.debug.warn("user {} has 1 open session\n", .{uid});
-                    std.debug.warn("creating {}\n", .{path});
-
-                    try std.os.setuid(uid);
-                    try std.os.mkdir(path, 0o700);
-                    try std.os.setuid(0);
-
-                    sessions.appendAssumeCapacity(.{ .uid = uid, .open_count = 1 });
-                }
-            },
-            'C' => {
-                for (sessions.items) |*session, i| {
-                    if (uid == session.uid) {
-                        session.open_count -= 1;
-                        std.debug.warn("user {} has {} open sessions\n", .{ uid, session.open_count });
-                        if (session.open_count == 0) {
-                            const path = std.fmt.bufPrint(&buf, "{}/{}", .{ rundir_parent, uid }) catch unreachable;
-                            std.debug.warn("deleting {}\n", .{path});
-                            try std.fs.deleteTreeAbsolute(path);
-                            _ = sessions.swapRemove(i);
-                        }
-                        break;
-                    }
-                } else unreachable;
-            },
-            else => return error.InvalidMessageType,
-        }
+        while (free_list.popFirst()) |node|
+            gpa.destroy(@fieldParentPtr(Context, "node", node));
     }
+}
+
+fn handleConnection(context: *Context) void {
+    defer {
+        free_list.prepend(&context.node);
+        context.connection.close();
+    }
+
+    const reader = context.connection.inStream();
+    const uid = reader.readIntNative(c.uid_t) catch |err| {
+        std.log.err("error reading uid from pam_rundird connection: {}", .{err});
+        return;
+    };
+
+    var it = sessions.first;
+    const session = while (it) |node| : (it = node.next) {
+        if (node.data.uid == uid) break &node.data;
+    } else
+        addSession(uid) catch |err| {
+        std.log.err("error creating directory: {}", .{err});
+        return;
+    };
+
+    const writer = context.connection.outStream();
+    writer.writeByte('A') catch |err| {
+        std.log.err("error sending ack to pam_rundird: {}", .{err});
+        return;
+    };
+    session.open_count += 1;
+    std.log.info("user {} has {} open sessions", .{ uid, session.open_count });
+
+    const message = reader.readByte() catch |err| {
+        // Don't want to delete the rundir while it is still in use, so handle
+        // this error by "leaking" a session.
+        std.log.err("error reading close message from pam_rundird connection: {}", .{err});
+        return;
+    };
+    std.debug.assert(message == 'C');
+    session.open_count -= 1;
+    std.log.info("user {} has {} open sessions", .{ uid, session.open_count });
+
+    if (session.open_count == 0) {
+        const path = std.fmt.bufPrint(&buf, "{}/{}", .{ rundir_parent, uid }) catch unreachable;
+        std.log.info("deleting {}", .{path});
+        std.fs.deleteTreeAbsolute(path) catch |err| {
+            std.log.err("error deleting {}: {}\n", .{ path, err });
+        };
+
+        const node = @fieldParentPtr(@TypeOf(sessions).Node, "data", session);
+        sessions.remove(node);
+        gpa.destroy(node);
+    }
+}
+
+fn addSession(uid: c.uid_t) !*Session {
+    const node = try gpa.create(std.SinglyLinkedList(Session).Node);
+    errdefer gpa.destroy(node);
+
+    const path = std.fmt.bufPrint(&buf, "{}/{}", .{ rundir_parent, uid }) catch unreachable;
+
+    try std.os.seteuid(uid);
+    defer std.os.seteuid(0) catch
+        |err| std.log.err("failed to set euid to 0, this should never happen: {}\n", .{err});
+
+    std.log.info("creating {}\n", .{path});
+    try std.os.mkdir(path, 0o700);
+
+    node.data = .{
+        .uid = uid,
+        .open_count = 0,
+    };
+    sessions.prepend(node);
+
+    return &node.data;
 }
