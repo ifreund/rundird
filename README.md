@@ -5,3 +5,13 @@ A simple daemon and PAM module providing the XDG_RUNTIME_DIR of the
 
 *Note: this software is considered to be experimental and unstable, use at
 your own risk*
+
+## PAM configuration
+
+The recommended pam configuration is:
+
+```
+session		optional	pam_rundird.so
+```
+
+See also `pam.conf(5)`.
