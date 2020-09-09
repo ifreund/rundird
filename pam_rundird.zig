@@ -18,10 +18,11 @@
 
 const std = @import("std");
 
+const os = std.os;
+
 const c = @cImport({
     @cInclude("pwd.h");
     @cInclude("security/pam_modules.h");
-    @cInclude("unistd.h");
 });
 
 const socket_path = "/run/rundird.sock";
@@ -38,11 +39,11 @@ export fn pam_sm_close_session(pamh: *c.pam_handle_t, flags: c_int, argc: c_int,
 }
 
 fn freeFd(pamh: ?*c.pam_handle_t, data: ?*c_void, error_status: c_int) callconv(.C) void {
-    std.heap.c_allocator.destroy(@intToPtr(*std.os.fd_t, @ptrToInt(data)));
+    std.heap.c_allocator.destroy(@intToPtr(*os.fd_t, @ptrToInt(data)));
 }
 
 fn handleOpen(pamh: *c.pam_handle_t) !void {
-    const fd = try std.heap.c_allocator.create(std.os.fd_t);
+    const fd = try std.heap.c_allocator.create(os.fd_t);
     fd.* = -1;
     if (c.pam_set_data(pamh, "pam_rundird_fd", fd, freeFd) != c.PAM_SUCCESS) {
         std.heap.c_allocator.destroy(fd);
@@ -56,7 +57,7 @@ fn handleOpen(pamh: *c.pam_handle_t) !void {
     const sock = try std.net.connectUnixSocket(socket_path);
 
     const writer = sock.outStream();
-    try writer.writeIntNative(c.uid_t, uid);
+    try writer.writeIntNative(os.uid_t, uid);
 
     const reader = sock.inStream();
     switch (try reader.readByte()) {
@@ -66,7 +67,7 @@ fn handleOpen(pamh: *c.pam_handle_t) !void {
             // Construct a buffer large enough to contain the full string passed to
             // pam_putenv() and pre-populated with the compile time known parts.
             const base = "XDG_RUNTIME_DIR=" ++ rundir_parent ++ "/";
-            var buf = base.* ++ [1]u8{undefined} ** std.fmt.count("{}\x00", .{std.math.maxInt(c.uid_t)});
+            var buf = base.* ++ [1]u8{undefined} ** std.fmt.count("{}\x00", .{std.math.maxInt(os.uid_t)});
             _ = std.fmt.bufPrint(buf[base.len..], "{}\x00", .{uid}) catch unreachable;
 
             if (c.pam_putenv(pamh, &buf) != c.PAM_SUCCESS) return error.PutenvFail;
@@ -82,7 +83,7 @@ fn handleClose(pamh: *c.pam_handle_t) !void {
     // No data or a value of -1 means that open_session failed, so there is
     // nothing to do. An error was already reported in open_session so don't
     // report another.
-    var fd: ?*const std.os.fd_t = undefined;
+    var fd: ?*const os.fd_t = undefined;
     if (c.pam_get_data(pamh, "pam_rundird_fd", @ptrCast(*?*const c_void, &fd)) != c.PAM_SUCCESS) return;
     if (fd == null or fd.?.* == -1) return;
 
@@ -97,7 +98,7 @@ fn handleClose(pamh: *c.pam_handle_t) !void {
 }
 
 /// Get the uid of the user for which the session is being opened
-fn getUid(pamh: *c.pam_handle_t) !c.uid_t {
+fn getUid(pamh: *c.pam_handle_t) !os.uid_t {
     var user: ?[*:0]const u8 = undefined;
     if (c.pam_get_user(pamh, &user, null) != c.PAM_SUCCESS) return error.UnknownUser;
     const pw: *c.passwd = c.getpwnam(user) orelse return error.UnknownUser;

@@ -18,10 +18,12 @@
 
 const std = @import("std");
 
+const os = std.os;
+const log = std.log;
+
 const c = @cImport({
     @cInclude("linux/securebits.h");
     @cInclude("sys/prctl.h");
-    @cInclude("sys/types.h");
 });
 
 pub const io_mode = .evented;
@@ -33,10 +35,10 @@ const socket_path = "/run/rundird.sock";
 const rundir_parent = "/run/user";
 
 // Large enough to hold any runtime dir path
-var buf = [1]u8{undefined} ** std.fmt.count("{}/{}", .{ rundir_parent, std.math.maxInt(c.uid_t) });
+var buf = [1]u8{undefined} ** std.fmt.count("{}/{}", .{ rundir_parent, std.math.maxInt(os.uid_t) });
 
 const Session = struct {
-    uid: c.uid_t,
+    uid: os.uid_t,
     open_count: u32,
 };
 
@@ -62,7 +64,7 @@ pub fn main() !void {
 
     try server.listen(try std.net.Address.initUnix(socket_path));
 
-    std.log.info("waiting for connections...", .{});
+    log.info("waiting for connections...", .{});
     while (true) {
         // TODO: we can probably continue on error in most cases
         const con = try server.accept();
@@ -88,8 +90,8 @@ fn handleConnection(context: *Context) void {
     }
 
     const reader = context.connection.inStream();
-    const uid = reader.readIntNative(c.uid_t) catch |err| {
-        std.log.err("error reading uid from pam_rundird connection: {}", .{err});
+    const uid = reader.readIntNative(os.uid_t) catch |err| {
+        log.err("error reading uid from pam_rundird connection: {}", .{err});
         return;
     };
 
@@ -98,33 +100,33 @@ fn handleConnection(context: *Context) void {
         if (node.data.uid == uid) break &node.data;
     } else
         addSession(uid) catch |err| {
-        std.log.err("error creating directory: {}", .{err});
+        log.err("error creating directory: {}", .{err});
         return;
     };
 
     const writer = context.connection.outStream();
     writer.writeByte('A') catch |err| {
-        std.log.err("error sending ack to pam_rundird: {}", .{err});
+        log.err("error sending ack to pam_rundird: {}", .{err});
         return;
     };
     session.open_count += 1;
-    std.log.info("user {} has {} open sessions", .{ uid, session.open_count });
+    log.info("user {} has {} open sessions", .{ uid, session.open_count });
 
     const message = reader.readByte() catch |err| {
         // Don't want to delete the rundir while it is still in use, so handle
         // this error by "leaking" a session.
-        std.log.err("error reading close message from pam_rundird connection: {}", .{err});
+        log.err("error reading close message from pam_rundird connection: {}", .{err});
         return;
     };
     std.debug.assert(message == 'C');
     session.open_count -= 1;
-    std.log.info("user {} has {} open sessions", .{ uid, session.open_count });
+    log.info("user {} has {} open sessions", .{ uid, session.open_count });
 
     if (session.open_count == 0) {
         const path = std.fmt.bufPrint(&buf, "{}/{}", .{ rundir_parent, uid }) catch unreachable;
-        std.log.info("deleting {}", .{path});
+        log.info("deleting {}", .{path});
         std.fs.deleteTreeAbsolute(path) catch |err| {
-            std.log.err("error deleting {}: {}\n", .{ path, err });
+            log.err("error deleting {}: {}\n", .{ path, err });
         };
 
         const node = @fieldParentPtr(@TypeOf(sessions).Node, "data", session);
@@ -133,18 +135,18 @@ fn handleConnection(context: *Context) void {
     }
 }
 
-fn addSession(uid: c.uid_t) !*Session {
+fn addSession(uid: os.uid_t) !*Session {
     const node = try gpa.create(std.SinglyLinkedList(Session).Node);
     errdefer gpa.destroy(node);
 
     const path = std.fmt.bufPrint(&buf, "{}/{}", .{ rundir_parent, uid }) catch unreachable;
 
-    try std.os.seteuid(uid);
-    defer std.os.seteuid(0) catch
-        |err| std.log.err("failed to set euid to 0, this should never happen: {}\n", .{err});
+    try os.seteuid(uid);
+    defer os.seteuid(0) catch
+        |err| log.err("failed to set euid to 0, this should never happen: {}\n", .{err});
 
-    std.log.info("creating {}\n", .{path});
-    try std.os.mkdir(path, 0o700);
+    log.info("creating {}\n", .{path});
+    try os.mkdir(path, 0o700);
 
     node.data = .{
         .uid = uid,
