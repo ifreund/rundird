@@ -21,7 +21,6 @@ const std = @import("std");
 const os = std.os;
 
 const c = @cImport({
-    @cInclude("pwd.h");
     @cInclude("security/pam_modules.h");
 });
 
@@ -101,6 +100,6 @@ fn handleClose(pamh: *c.pam_handle_t) !void {
 fn getUid(pamh: *c.pam_handle_t) !os.uid_t {
     var user: ?[*:0]const u8 = undefined;
     if (c.pam_get_user(pamh, &user, null) != c.PAM_SUCCESS) return error.UnknownUser;
-    const pw: *c.passwd = c.getpwnam(user) orelse return error.UnknownUser;
-    return pw.pw_uid;
+    const user_info = try std.process.getUserInfo(std.mem.span(user.?));
+    return user_info.uid;
 }
