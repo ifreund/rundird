@@ -16,3 +16,10 @@ install: rundird pam_rundird
 uninstall:
 	rm $(PREFIX)/lib/security/pam_rundird.so
 	rm $(PREFIX)/bin/rundird
+
+clean:
+	rm -r zig-cache
+	rm rundird
+	rm rundird.o
+	rm libpam_rundird.so.0.0.0
+	rm pam_rundird.o
