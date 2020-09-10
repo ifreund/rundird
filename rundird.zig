@@ -89,7 +89,7 @@ fn handleConnection(context: *Context) void {
         context.connection.close();
     }
 
-    const reader = context.connection.inStream();
+    const reader = context.connection.reader();
     const uid = reader.readIntNative(os.uid_t) catch |err| {
         log.err("error reading uid from pam_rundird connection: {}", .{err});
         return;
@@ -104,7 +104,7 @@ fn handleConnection(context: *Context) void {
         return;
     };
 
-    const writer = context.connection.outStream();
+    const writer = context.connection.writer();
     writer.writeByte('A') catch |err| {
         log.err("error sending ack to pam_rundird: {}", .{err});
         return;
@@ -112,13 +112,13 @@ fn handleConnection(context: *Context) void {
     session.open_count += 1;
     log.info("user {} has {} open sessions", .{ uid, session.open_count });
 
-    const message = reader.readByte() catch |err| {
+    const bytes_read = reader.read(&buf) catch |err| {
         // Don't want to delete the rundir while it is still in use, so handle
         // this error by "leaking" a session.
-        log.err("error reading close message from pam_rundird connection: {}", .{err});
+        log.err("error waiting for pam_rundird connection to be closed: {}", .{err});
         return;
     };
-    std.debug.assert(message == 'C');
+    std.debug.assert(bytes_read == 0);
     session.open_count -= 1;
     log.info("user {} has {} open sessions", .{ uid, session.open_count });
 

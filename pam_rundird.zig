@@ -32,11 +32,6 @@ export fn pam_sm_open_session(pamh: *c.pam_handle_t, flags: c_int, argc: c_int, 
     return c.PAM_SUCCESS;
 }
 
-export fn pam_sm_close_session(pamh: *c.pam_handle_t, flags: c_int, argc: c_int, argv: [*][*:0]u8) c_int {
-    handleClose(pamh) catch return c.PAM_SESSION_ERR;
-    return c.PAM_SUCCESS;
-}
-
 fn freeFd(pamh: ?*c.pam_handle_t, data: ?*c_void, error_status: c_int) callconv(.C) void {
     std.heap.c_allocator.destroy(@intToPtr(*os.fd_t, @ptrToInt(data)));
 }
@@ -51,23 +46,27 @@ fn handleOpen(pamh: *c.pam_handle_t) !void {
         return error.OutOfMemory;
     }
 
-    const uid = try getUid(pamh);
+    // Get the uid of the user for which the session is being opened
+    var user: ?[*:0]const u8 = undefined;
+    if (c.pam_get_user(pamh, &user, null) != c.PAM_SUCCESS) return error.UnknownUser;
+    const user_info = try std.process.getUserInfo(std.mem.span(user.?));
 
     const sock = try std.net.connectUnixSocket(socket_path);
 
-    const writer = sock.outStream();
-    try writer.writeIntNative(os.uid_t, uid);
+    try sock.writer().writeIntNative(os.uid_t, user_info.uid);
 
-    const reader = sock.inStream();
-    switch (try reader.readByte()) {
+    switch (try sock.reader().readByte()) {
         // Ack - rundird has created the directory if needed
         'A' => {
+            // pam_putenv() could still fail, but that's orthogonal to the
+            // communication with rundird.
             fd.* = sock.handle;
+
             // Construct a buffer large enough to contain the full string passed to
             // pam_putenv() and pre-populated with the compile time known parts.
             const base = "XDG_RUNTIME_DIR=" ++ rundir_parent ++ "/";
             var buf = base.* ++ [1]u8{undefined} ** std.fmt.count("{}\x00", .{std.math.maxInt(os.uid_t)});
-            _ = std.fmt.bufPrint(buf[base.len..], "{}\x00", .{uid}) catch unreachable;
+            _ = std.fmt.bufPrint(buf[base.len..], "{}\x00", .{user_info.uid}) catch unreachable;
 
             if (c.pam_putenv(pamh, &buf) != c.PAM_SUCCESS) return error.PutenvFail;
         },
@@ -78,28 +77,17 @@ fn handleOpen(pamh: *c.pam_handle_t) !void {
     }
 }
 
-fn handleClose(pamh: *c.pam_handle_t) !void {
+export fn pam_sm_close_session(pamh: *c.pam_handle_t, flags: c_int, argc: c_int, argv: [*][*:0]u8) c_int {
     // No data or a value of -1 means that open_session failed, so there is
     // nothing to do. An error was already reported in open_session so don't
     // report another.
     var fd: ?*const os.fd_t = undefined;
-    if (c.pam_get_data(pamh, "pam_rundird_fd", @ptrCast(*?*const c_void, &fd)) != c.PAM_SUCCESS) return;
-    if (fd == null or fd.?.* == -1) return;
+    if (c.pam_get_data(pamh, "pam_rundird_fd", @ptrCast(*?*const c_void, &fd)) != c.PAM_SUCCESS)
+        return c.PAM_SUCCESS;
+    if (fd == null or fd.?.* == -1)
+        return c.PAM_SUCCESS;
 
-    const sock = std.fs.File{ .handle = fd.?.* };
-    defer sock.close();
-
-    const uid = try getUid(pamh);
-
-    // TODO: just close the fd instead
-    const writer = sock.outStream();
-    try writer.writeByte('C'); // C is for close
-}
-
-/// Get the uid of the user for which the session is being opened
-fn getUid(pamh: *c.pam_handle_t) !os.uid_t {
-    var user: ?[*:0]const u8 = undefined;
-    if (c.pam_get_user(pamh, &user, null) != c.PAM_SUCCESS) return error.UnknownUser;
-    const user_info = try std.process.getUserInfo(std.mem.span(user.?));
-    return user_info.uid;
+    // Closing the connection indicates to rundird that the session has closed.
+    std.os.close(fd.?.*);
+    return c.PAM_SUCCESS;
 }
