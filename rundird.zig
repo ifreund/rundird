@@ -17,19 +17,14 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 const std = @import("std");
-
 const os = std.os;
 const log = std.log;
-
-const c = @cImport({
-    @cInclude("linux/securebits.h");
-    @cInclude("sys/prctl.h");
-});
 
 pub const io_mode = .evented;
 pub const event_loop_mode = .single_threaded;
 
-const gpa = std.heap.c_allocator;
+var allocator = std.heap.GeneralPurposeAllocator(.{}){};
+const gpa = &allocator.allocator;
 
 const socket_path = "/run/rundird.sock";
 const rundir_parent = "/run/user";
@@ -54,10 +49,9 @@ var sessions = std.SinglyLinkedList(Session){};
 var free_list = std.SinglyLinkedList(void){};
 
 pub fn main() !void {
-    // This allows us to setuid() and create rundirs with the correct owner
+    // This allows us to seteuid() and create rundirs with the correct owner
     // while maintaining write permission to the root owned parent directory.
-    if (c.prctl(c.PR_SET_SECUREBITS, @as(c_ulong, c.SECBIT_NO_SETUID_FIXUP)) < 0)
-        return error.PermissonDenied;
+    _ = try os.prctl(os.PR_SET_SECUREBITS, .{os.SECBIT_NO_SETUID_FIXUP});
 
     var server = std.net.StreamServer.init(.{});
     defer server.deinit();

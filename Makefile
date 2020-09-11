@@ -4,7 +4,7 @@ ZIG ?= zig
 all: rundird pam_rundird
 
 rundird: rundird.zig
-	$(ZIG) build-exe -lc rundird.zig
+	$(ZIG) build-exe rundird.zig
 
 pam_rundird: pam_rundird.zig
 	$(ZIG) build-lib -dynamic -fPIC -lc -lpam pam_rundird.zig
