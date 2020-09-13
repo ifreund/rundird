@@ -16,16 +16,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+const build_options = @import("build_options");
 const std = @import("std");
-
 const os = std.os;
 
 const c = @cImport({
     @cInclude("security/pam_modules.h");
 });
-
-const socket_path = "/run/rundird.sock";
-const rundir_parent = "/run/user";
 
 export fn pam_sm_open_session(pamh: *c.pam_handle_t, flags: c_int, argc: c_int, argv: [*][*:0]u8) c_int {
     handleOpen(pamh) catch return c.PAM_SESSION_ERR;
@@ -51,7 +48,7 @@ fn handleOpen(pamh: *c.pam_handle_t) !void {
     if (c.pam_get_user(pamh, &user, null) != c.PAM_SUCCESS) return error.UnknownUser;
     const user_info = try std.process.getUserInfo(std.mem.span(user.?));
 
-    const sock = try std.net.connectUnixSocket(socket_path);
+    const sock = try std.net.connectUnixSocket(build_options.socket_path);
 
     try sock.writer().writeIntNative(os.uid_t, user_info.uid);
 
@@ -64,7 +61,7 @@ fn handleOpen(pamh: *c.pam_handle_t) !void {
 
             // Construct a buffer large enough to contain the full string passed to
             // pam_putenv() and pre-populated with the compile time known parts.
-            const base = "XDG_RUNTIME_DIR=" ++ rundir_parent ++ "/";
+            const base = "XDG_RUNTIME_DIR=" ++ build_options.rundir_parent ++ "/";
             var buf = base.* ++ [1]u8{undefined} ** std.fmt.count("{}\x00", .{std.math.maxInt(os.uid_t)});
             _ = std.fmt.bufPrint(buf[base.len..], "{}\x00", .{user_info.uid}) catch unreachable;
 

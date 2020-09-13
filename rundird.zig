@@ -16,6 +16,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+const build_options = @import("build_options");
 const std = @import("std");
 const os = std.os;
 const log = std.log;
@@ -26,11 +27,8 @@ pub const event_loop_mode = .single_threaded;
 var allocator = std.heap.GeneralPurposeAllocator(.{}){};
 const gpa = &allocator.allocator;
 
-const socket_path = "/run/rundird.sock";
-const rundir_parent = "/run/user";
-
 // Large enough to hold any runtime dir path
-var buf = [1]u8{undefined} ** std.fmt.count("{}/{}", .{ rundir_parent, std.math.maxInt(os.uid_t) });
+var buf = [1]u8{undefined} ** std.fmt.count("{}/{}", .{ build_options.rundir_parent, std.math.maxInt(os.uid_t) });
 
 const Session = struct {
     uid: os.uid_t,
@@ -56,7 +54,7 @@ pub fn main() !void {
     var server = std.net.StreamServer.init(.{});
     defer server.deinit();
 
-    try server.listen(try std.net.Address.initUnix(socket_path));
+    try server.listen(try std.net.Address.initUnix(build_options.socket_path));
 
     log.info("waiting for connections...", .{});
     while (true) {
@@ -117,7 +115,7 @@ fn handleConnection(context: *Context) void {
     log.info("user {} has {} open sessions", .{ uid, session.open_count });
 
     if (session.open_count == 0) {
-        const path = std.fmt.bufPrint(&buf, "{}/{}", .{ rundir_parent, uid }) catch unreachable;
+        const path = std.fmt.bufPrint(&buf, "{}/{}", .{ build_options.rundir_parent, uid }) catch unreachable;
         log.info("deleting {}", .{path});
         std.fs.deleteTreeAbsolute(path) catch |err| {
             log.err("error deleting {}: {}\n", .{ path, err });
@@ -133,7 +131,7 @@ fn addSession(uid: os.uid_t) !*Session {
     const node = try gpa.create(std.SinglyLinkedList(Session).Node);
     errdefer gpa.destroy(node);
 
-    const path = std.fmt.bufPrint(&buf, "{}/{}", .{ rundir_parent, uid }) catch unreachable;
+    const path = std.fmt.bufPrint(&buf, "{}/{}", .{ build_options.rundir_parent, uid }) catch unreachable;
 
     try os.seteuid(uid);
     defer os.seteuid(0) catch
