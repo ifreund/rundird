@@ -92,9 +92,9 @@ fn handleConnection(context: *Context) void {
         if (node.data.uid == uid) break &node.data;
     } else
         addSession(uid) catch |err| {
-        log.err("error creating directory: {}", .{err});
-        return;
-    };
+            log.err("error creating directory: {}", .{err});
+            return;
+        };
 
     const writer = context.connection.writer();
     writer.writeByte('A') catch |err| {
@@ -134,8 +134,9 @@ fn addSession(uid: os.uid_t) !*Session {
     const path = std.fmt.bufPrint(&buf, "{}/{}", .{ build_options.rundir_parent, uid }) catch unreachable;
 
     try os.seteuid(uid);
-    defer os.seteuid(0) catch
-        |err| log.err("failed to set euid to 0, this should never happen: {}\n", .{err});
+    defer os.seteuid(0) catch |err| {
+        log.err("failed to set euid to 0, this should never happen: {}\n", .{err});
+    };
 
     log.info("creating {}\n", .{path});
     try os.mkdir(path, 0o700);
