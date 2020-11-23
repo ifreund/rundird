@@ -49,7 +49,7 @@ var free_list = std.SinglyLinkedList(void){};
 pub fn main() !void {
     // This allows us to seteuid() and create rundirs with the correct owner
     // while maintaining write permission to the root owned parent directory.
-    _ = try os.prctl(os.PR_SET_SECUREBITS, .{os.SECBIT_NO_SETUID_FIXUP});
+    _ = try os.prctl(os.PR.SET_SECUREBITS, .{os.SECBIT_NO_SETUID_FIXUP});
 
     var server = std.net.StreamServer.init(.{});
     defer server.deinit();

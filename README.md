@@ -8,14 +8,11 @@ your own risk*
 
 ## Building
 
-rundird currently depends on the zig master branch, last tested at commit
-`1eaf069`. When zig 0.7.0 is released, rundird will stick with that version.
-
-In addition to zig, you will need the development headers for PAM
-installed. Then run, for example:
+rundird depends on [zig](https://ziglang.org) 0.7.0 and PAM. To build and install
+the daemon to `/usr/`:
 
 ```
-zig build -Drelease-safe=true --prefix /usr install
+zig build -Drelease-safe=true --prefix /usr/ install
 ```
 
 ## PAM configuration
