@@ -28,7 +28,10 @@ var allocator = std.heap.GeneralPurposeAllocator(.{}){};
 const gpa = &allocator.allocator;
 
 // Large enough to hold any runtime dir path
-var buf = [1]u8{undefined} ** std.fmt.count("{}/{}", .{ build_options.rundir_parent, std.math.maxInt(os.uid_t) });
+var buf: [std.fmt.count("{}/{}", .{
+    build_options.rundir_parent,
+    std.math.maxInt(os.uid_t),
+})]u8 = undefined;
 
 const Session = struct {
     uid: os.uid_t,
@@ -54,14 +57,44 @@ pub fn main() !void {
     var server = std.net.StreamServer.init(.{});
     defer server.deinit();
 
-    try server.listen(try std.net.Address.initUnix(build_options.socket_path));
+    const addr = comptime std.net.Address.initUnix(build_options.socket_path) catch unreachable;
+    try server.listen(addr);
 
     log.info("waiting for connections...", .{});
     while (true) {
-        // TODO: we can probably continue on error in most cases
-        const con = try server.accept();
+        const con = server.accept() catch |err| switch (err) {
+            // None of these are fatal, we can just try again
+            error.ConnectionAborted,
+            error.ProcessFdQuotaExceeded,
+            error.SystemFdQuotaExceeded,
+            error.SystemResources,
+            error.ProtocolFailure,
+            error.BlockedByFirewall,
+            => {
+                log.notice("accept returned with error {}, retrying...", .{err});
+                continue;
+            },
+            // We call listen above and exit on error
+            error.SocketNotListening,
+            // We require root access with the prctl call above
+            error.PermissionDenied,
+            error.FileDescriptorNotASocket,
+            // The following are windows only... we need better std.os organization
+            error.ConnectionResetByPeer,
+            error.NetworkSubsystemFailed,
+            error.OperationNotSupported,
+            error.Unexpected,
+            // These could likely all be unreachable except error.Unexpected.
+            // However, the std is not stable yet so let's make sure we get
+            // an error trace if something goes wrong.
+            => return err,
+        };
 
-        var context = try gpa.create(Context);
+        var context = gpa.create(Context) catch {
+            log.crit("out of memory, closing connection early", .{});
+            con.file.close();
+            continue;
+        };
         context.* = .{
             .connection = con.file,
             .frame = undefined,
@@ -87,6 +120,7 @@ fn handleConnection(context: *Context) void {
         return;
     };
 
+    // Check if the session exists, if not add a new one
     var it = sessions.first;
     const session = while (it) |node| : (it = node.next) {
         if (node.data.uid == uid) break &node.data;
