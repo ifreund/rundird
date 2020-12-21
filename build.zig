@@ -5,7 +5,13 @@ pub fn build(b: *std.build.Builder) !void {
     const mode = b.standardReleaseOptions();
 
     const socket_path = "/run/rundird.sock";
-    const rundir_parent = "/run/user";
+    const rundir_parent = b.option(
+        []const u8,
+        "rundir-parent",
+        "Absolute path to the parent directory for user dirs. Default is /run/user",
+    ) orelse "/run/user";
+
+    if (!std.fs.path.isAbsolute(rundir_parent)) return error.InvalidRundirParent;
 
     const rundird = b.addExecutable("rundird", "rundird.zig");
     rundird.setTarget(target);
