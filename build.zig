@@ -4,7 +4,12 @@ pub fn build(b: *std.build.Builder) !void {
     const target = b.standardTargetOptions(.{});
     const mode = b.standardReleaseOptions();
 
-    const socket_path = "/run/rundird.sock";
+    const socket_path = b.option(
+        []const u8,
+        "socket-path",
+        "The socket path for rundird. Default is /run/rundird.sock",
+    ) orelse "/run/rundird.sock";
+
     const rundir_parent = b.option(
         []const u8,
         "rundir-parent",
