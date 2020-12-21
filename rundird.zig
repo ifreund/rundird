@@ -2,6 +2,7 @@
 // XDG_RUNTIME_DIR of the base directory spec.
 //
 // Copyright (C) 2020 Isaac Freund
+// Copyright (C) 2020 Marten Ringwelski
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -53,6 +54,9 @@ pub fn main() !void {
     // This allows us to seteuid() and create rundirs with the correct owner
     // while maintaining write permission to the root owned parent directory.
     _ = try os.prctl(os.PR.SET_SECUREBITS, .{os.SECBIT_NO_SETUID_FIXUP});
+
+    log.info("creating {}\n", .{build_options.rundir_parent});
+    try std.fs.cwd().makePath(build_options.rundir_parent);
 
     var server = std.net.StreamServer.init(.{});
     defer server.deinit();
