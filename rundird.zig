@@ -18,6 +18,7 @@
 
 const build_options = @import("build_options");
 const std = @import("std");
+const fs = std.fs;
 const os = std.os;
 const log = std.log;
 
@@ -39,7 +40,7 @@ const Session = struct {
 };
 
 const Context = struct {
-    connection: std.fs.File,
+    connection: fs.File,
     frame: @Frame(handleConnection),
     // Seems like this needs to be intrusive to avoid a circular dependency
     // of types.
@@ -151,7 +152,7 @@ fn handleConnection(context: *Context) void {
     if (session.open_count == 0) {
         const path = std.fmt.bufPrint(&buf, "{}/{}", .{ build_options.rundir_parent, uid }) catch unreachable;
         log.info("deleting {}", .{path});
-        std.fs.deleteTreeAbsolute(path) catch |err| {
+        fs.deleteTreeAbsolute(path) catch |err| {
             log.err("error deleting {}: {}\n", .{ path, err });
         };
 
@@ -173,7 +174,13 @@ fn addSession(uid: os.uid_t) !*Session {
     };
 
     log.info("creating {}\n", .{path});
-    try os.mkdir(path, 0o700);
+    os.mkdir(path, 0o700) catch |err| switch (err) {
+        error.PathAlreadyExists => {
+            try fs.deleteTreeAbsolute(path);
+            try os.mkdir(path, 0o700);
+        },
+        else => return err,
+    };
 
     node.data = .{
         .uid = uid,
