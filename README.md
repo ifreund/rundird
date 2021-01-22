@@ -3,16 +3,13 @@
 A simple daemon and PAM module providing the XDG_RUNTIME_DIR of the
 [freedesktop.org base directory spec](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html).
 
-*Note: this software is considered to be experimental and unstable, use at
-your own risk*
-
 ## Building
 
-rundird depends on [zig](https://ziglang.org) 0.7.0 and PAM. To build and install
-the daemon to `/usr/`:
+rundird depends on [zig](https://ziglang.org) 0.7 and PAM. To build and install
+the daemon to `/usr` run:
 
 ```
-zig build -Drelease-safe=true --prefix /usr/ install
+zig build -Drelease-safe --prefix /usr install
 ```
 
 ## PAM configuration
