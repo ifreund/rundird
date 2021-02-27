@@ -23,6 +23,11 @@ const fs = std.fs;
 const os = std.os;
 const log = std.log;
 
+const c = @cImport({
+    @cInclude("pwd.h");
+    @cInclude("sys/types.h");
+});
+
 pub const io_mode = .evented;
 pub const event_loop_mode = .single_threaded;
 
@@ -38,6 +43,7 @@ var buf: [std.fmt.count("{}/{}", .{
 const Session = struct {
     uid: os.uid_t,
     open_count: u32,
+    child: os.pid_t,
 };
 
 const Context = struct {
@@ -161,6 +167,12 @@ fn handleConnection(context: *Context) void {
         };
 
         const node = @fieldParentPtr(@TypeOf(sessions).Node, "data", session);
+
+        log.info("killing pid {}", .{node.data.child});
+        std.os.kill(node.data.child, std.os.SIGTERM) catch |err| {
+            log.err("failed to kill startup process: {}", .{err});
+        };
+
         sessions.remove(node);
         gpa.destroy(node);
     }
@@ -186,9 +198,39 @@ fn addSession(uid: os.uid_t) !*Session {
         else => return err,
     };
 
+    // It would be preferable to use ChildProcess here, but we're unable due to
+    // https://github.com/ziglang/zig/issues/6682
+    var fork_pid = std.c.fork();
+    if (fork_pid == 0) {
+        const pwd = c.getpwuid(uid);
+        const homedir = std.mem.span(pwd.*.pw_dir);
+
+        const script = fs.path.join(gpa, &[_][]const u8{ homedir, ".config/rundird" }) catch std.os.exit(1);
+        defer gpa.free(script);
+
+        var scriptZ = try gpa.dupeZ(u8, script);
+        defer gpa.free(scriptZ);
+        log.info("Executing {}", .{scriptZ});
+
+        // While we are seteuid already, there's security benefit to
+        // permanently locking ourselves down but also bash won't run
+        // unless this is done.
+        try os.setuid(pwd.*.pw_uid);
+        try os.setgid(pwd.*.pw_gid);
+
+        const env = &[_:null]?[*:0]const u8{null};
+
+        _ = std.os.execveZ(
+            scriptZ,
+            &[_:null]?[*:0]const u8{ scriptZ, null },
+            env,
+        ) catch std.os.exit(1);
+    }
+
     node.data = .{
         .uid = uid,
         .open_count = 0,
+        .child = fork_pid,
     };
     sessions.prepend(node);
 
