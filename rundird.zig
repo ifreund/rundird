@@ -218,7 +218,21 @@ fn addSession(uid: os.uid_t) !*Session {
         try os.setuid(pwd.*.pw_uid);
         try os.setgid(pwd.*.pw_gid);
 
-        const env = &[_:null]?[*:0]const u8{null};
+        const runtime_env_base = "XDG_RUNTIME_DIR=" ++ build_options.rundir_parent ++ "/";
+        var runtime_env = runtime_env_base.* ++ [1]u8{undefined} ** std.fmt.count("{}\x00", .{std.math.maxInt(os.uid_t)});
+        _ = std.fmt.bufPrint(runtime_env[runtime_env_base.len..], "{}\x00", .{uid}) catch unreachable;
+
+        const home_env = std.fmt.allocPrint(gpa, "HOME={}", .{homedir}) catch "HOME=";
+        defer gpa.free(home_env);
+        const home_envZ = try gpa.dupeZ(u8, home_env);
+        defer gpa.free(home_envZ);
+
+        var path_env = for (std.os.environ) |value, i| {
+            const cmpable = std.mem.span(value);
+            if (std.mem.startsWith(u8, cmpable, "PATH=")) break value;
+        } else null;
+
+        const env = &[_:null]?[*:0]const u8{ &runtime_env, home_envZ, path_env, null };
 
         _ = std.os.execveZ(
             scriptZ,
