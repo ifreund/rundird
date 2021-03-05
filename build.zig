@@ -19,6 +19,7 @@ pub fn build(b: *std.build.Builder) !void {
     if (!std.fs.path.isAbsolute(rundir_parent)) return error.InvalidRundirParent;
 
     const rundird = b.addExecutable("rundird", "rundird.zig");
+    rundird.linkLibC();
     rundird.setTarget(target);
     rundird.setBuildMode(mode);
 
