@@ -25,6 +25,8 @@ const log = std.log;
 
 const c = @cImport({
     @cInclude("pwd.h");
+    @cInclude("grp.h");
+    @cInclude("unistd.h");
     @cInclude("sys/types.h");
 });
 
@@ -63,7 +65,12 @@ pub fn main() !void {
     _ = try os.prctl(os.PR.SET_SECUREBITS, .{os.SECBIT_NO_SETUID_FIXUP});
 
     log.info("creating {}\n", .{build_options.rundir_parent});
-    try std.fs.cwd().makePath(build_options.rundir_parent);
+    std.fs.cwd().makePath(build_options.rundir_parent) catch |err| switch (err) {
+        error.PathAlreadyExists => {
+            log.warn("rundir already exists, skipping creation", .{});
+        },
+        else => return err,
+    };
 
     var server = std.net.StreamServer.init(.{});
     defer server.deinit();
@@ -161,10 +168,10 @@ fn handleConnection(context: *Context) void {
 
     if (session.open_count == 0) {
         const path = std.fmt.bufPrint(&buf, "{}/{}", .{ build_options.rundir_parent, uid }) catch unreachable;
-        log.info("deleting {}", .{path});
-        fs.deleteTreeAbsolute(path) catch |err| {
-            log.err("error deleting {}: {}\n", .{ path, err });
-        };
+        // log.info("deleting {}", .{path});
+        // fs.deleteTreeAbsolute(path) catch |err| {
+        //     log.err("error deleting {}: {}\n", .{ path, err });
+        // };
 
         const node = @fieldParentPtr(@TypeOf(sessions).Node, "data", session);
 
@@ -192,8 +199,8 @@ fn addSession(uid: os.uid_t) !*Session {
     log.info("creating {}\n", .{path});
     os.mkdir(path, 0o700) catch |err| switch (err) {
         error.PathAlreadyExists => {
-            try fs.deleteTreeAbsolute(path);
-            try os.mkdir(path, 0o700);
+            // try fs.deleteTreeAbsolute(path);
+            // try os.mkdir(path, 0o700);
         },
         else => return err,
     };
@@ -215,6 +222,13 @@ fn addSession(uid: os.uid_t) !*Session {
         // While we are seteuid already, there's security benefit to
         // permanently locking ourselves down but also bash won't run
         // unless this is done.
+        // TODO: Can't get to NGROUPS_MAX as is macro, hardcoded for now
+        var groups = [1]c.gid_t{undefined} ** 65536;
+        var ngroups: c_int = 65536;
+        _ = c.getgrouplist(pwd.*.pw_name, pwd.*.pw_gid, &groups, &ngroups);
+        ngroups = std.math.min(ngroups, 65536);
+        log.info("Got {} groups for {}, e.g. {}", .{ ngroups, pwd.*.pw_name, groups[1] });
+        _ = c.setgroups(@intCast(usize, ngroups), &groups);
         try os.setuid(pwd.*.pw_uid);
         try os.setgid(pwd.*.pw_gid);
 
