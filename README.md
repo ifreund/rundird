@@ -5,7 +5,7 @@ A simple daemon and PAM module providing the XDG_RUNTIME_DIR of the
 
 ## Building
 
-rundird depends on [zig](https://ziglang.org) 0.7 and PAM. To build and install
+rundird requires [zig](https://ziglang.org) 0.8 and PAM. To build and install
 the daemon to `/usr` run:
 
 ```
