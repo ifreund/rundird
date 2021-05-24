@@ -20,6 +20,7 @@
 const build_options = @import("build_options");
 const std = @import("std");
 const fs = std.fs;
+const net = std.net;
 const os = std.os;
 const log = std.log;
 
@@ -30,7 +31,7 @@ var allocator = std.heap.GeneralPurposeAllocator(.{}){};
 const gpa = &allocator.allocator;
 
 // Large enough to hold any runtime dir path
-var buf: [std.fmt.count("{}/{}", .{
+var buf: [std.fmt.count("{s}/{d}", .{
     build_options.rundir_parent,
     std.math.maxInt(os.uid_t),
 })]u8 = undefined;
@@ -41,7 +42,7 @@ const Session = struct {
 };
 
 const Context = struct {
-    connection: fs.File,
+    stream: net.Stream,
     frame: @Frame(handleConnection),
     // Seems like this needs to be intrusive to avoid a circular dependency
     // of types.
@@ -56,7 +57,7 @@ pub fn main() !void {
     // while maintaining write permission to the root owned parent directory.
     _ = try os.prctl(os.PR.SET_SECUREBITS, .{os.SECBIT_NO_SETUID_FIXUP});
 
-    log.info("creating {}\n", .{build_options.rundir_parent});
+    log.info("creating {s}\n", .{build_options.rundir_parent});
     try std.fs.cwd().makePath(build_options.rundir_parent);
 
     var server = std.net.StreamServer.init(.{});
@@ -81,8 +82,6 @@ pub fn main() !void {
             },
             // We call listen above and exit on error
             error.SocketNotListening,
-            // We require root access with the prctl call above
-            error.PermissionDenied,
             error.FileDescriptorNotASocket,
             // The following are windows only... we need better std.os organization
             error.ConnectionResetByPeer,
@@ -97,11 +96,11 @@ pub fn main() !void {
 
         var context = gpa.create(Context) catch {
             log.crit("out of memory, closing connection early", .{});
-            con.file.close();
+            con.stream.close();
             continue;
         };
         context.* = .{
-            .connection = con.file,
+            .stream = con.stream,
             .frame = undefined,
             .node = undefined,
         };
@@ -116,10 +115,10 @@ pub fn main() !void {
 fn handleConnection(context: *Context) void {
     defer {
         free_list.prepend(&context.node);
-        context.connection.close();
+        context.stream.close();
     }
 
-    const reader = context.connection.reader();
+    const reader = context.stream.reader();
     const uid = reader.readIntNative(os.uid_t) catch |err| {
         log.err("error reading uid from pam_rundird connection: {}", .{err});
         return;
@@ -135,13 +134,13 @@ fn handleConnection(context: *Context) void {
             return;
         };
 
-    const writer = context.connection.writer();
+    const writer = context.stream.writer();
     writer.writeByte('A') catch |err| {
         log.err("error sending ack to pam_rundird: {}", .{err});
         return;
     };
     session.open_count += 1;
-    log.info("user {} has {} open sessions", .{ uid, session.open_count });
+    log.info("user {d} has {d} open sessions", .{ uid, session.open_count });
 
     const bytes_read = reader.read(&buf) catch |err| {
         // Don't want to delete the rundir while it is still in use, so handle
@@ -151,13 +150,13 @@ fn handleConnection(context: *Context) void {
     };
     std.debug.assert(bytes_read == 0);
     session.open_count -= 1;
-    log.info("user {} has {} open sessions", .{ uid, session.open_count });
+    log.info("user {d} has {d} open sessions", .{ uid, session.open_count });
 
     if (session.open_count == 0) {
-        const path = std.fmt.bufPrint(&buf, "{}/{}", .{ build_options.rundir_parent, uid }) catch unreachable;
-        log.info("deleting {}", .{path});
+        const path = std.fmt.bufPrint(&buf, "{s}/{d}", .{ build_options.rundir_parent, uid }) catch unreachable;
+        log.info("deleting {s}", .{path});
         fs.deleteTreeAbsolute(path) catch |err| {
-            log.err("error deleting {}: {}\n", .{ path, err });
+            log.err("error deleting {s}: {}\n", .{ path, err });
         };
 
         const node = @fieldParentPtr(@TypeOf(sessions).Node, "data", session);
@@ -170,14 +169,13 @@ fn addSession(uid: os.uid_t) !*Session {
     const node = try gpa.create(std.SinglyLinkedList(Session).Node);
     errdefer gpa.destroy(node);
 
-    const path = std.fmt.bufPrint(&buf, "{}/{}", .{ build_options.rundir_parent, uid }) catch unreachable;
+    const path = std.fmt.bufPrint(&buf, "{s}/{d}", .{ build_options.rundir_parent, uid }) catch unreachable;
 
     try os.seteuid(uid);
-    defer os.seteuid(0) catch |err| {
-        log.err("failed to set euid to 0, this should never happen: {}\n", .{err});
-    };
+    // Can never fail as we are running as root.
+    defer os.seteuid(0) catch unreachable;
 
-    log.info("creating {}\n", .{path});
+    log.info("creating {s}\n", .{path});
     os.mkdir(path, 0o700) catch |err| switch (err) {
         error.PathAlreadyExists => {
             try fs.deleteTreeAbsolute(path);
