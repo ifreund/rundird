@@ -18,7 +18,7 @@ To enable the pam module, add the following recommended configuration to
 `/etc/pam.d/login`:
 
 ```
-session		optional	libpam_rundird.so
+session		optional	pam_rundird.so
 ```
 
 See also `pam.conf(5)`.
