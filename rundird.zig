@@ -19,10 +19,12 @@
 
 const build_options = @import("build_options");
 const std = @import("std");
+const assert = std.debug.assert;
+const fmt = std.fmt;
 const fs = std.fs;
+const log = std.log;
 const net = std.net;
 const os = std.os;
-const log = std.log;
 
 pub const io_mode = .evented;
 pub const event_loop_mode = .single_threaded;
@@ -31,10 +33,8 @@ var allocator = std.heap.GeneralPurposeAllocator(.{}){};
 const gpa = &allocator.allocator;
 
 // Large enough to hold any runtime dir path
-var buf: [std.fmt.count("{s}/{d}", .{
-    build_options.rundir_parent,
-    std.math.maxInt(os.uid_t),
-})]u8 = undefined;
+const buf_len = fmt.count("{s}/{d}", .{ build_options.rundir_parent, std.math.maxInt(os.uid_t) });
+var buf: [buf_len]u8 = undefined;
 
 const Session = struct {
     uid: os.uid_t,
@@ -44,8 +44,7 @@ const Session = struct {
 const Context = struct {
     stream: net.Stream,
     frame: @Frame(handleConnection),
-    // Seems like this needs to be intrusive to avoid a circular dependency
-    // of types.
+    // This needs to be intrusive to avoid a circular dependency of types.
     node: std.SinglyLinkedList(void).Node,
 };
 
@@ -77,7 +76,7 @@ pub fn main() !void {
             error.ProtocolFailure,
             error.BlockedByFirewall,
             => {
-                log.notice("accept returned with error {}, retrying...", .{err});
+                log.debug("accept returned with error {}, retrying...", .{err});
                 continue;
             },
             // We call listen above and exit on error
@@ -95,7 +94,7 @@ pub fn main() !void {
         };
 
         var context = gpa.create(Context) catch {
-            log.crit("out of memory, closing connection early", .{});
+            log.err("out of memory, closing connection early", .{});
             con.stream.close();
             continue;
         };
@@ -107,8 +106,9 @@ pub fn main() !void {
 
         context.frame = async handleConnection(context);
 
-        while (free_list.popFirst()) |node|
+        while (free_list.popFirst()) |node| {
             gpa.destroy(@fieldParentPtr(Context, "node", node));
+        }
     }
 }
 
@@ -120,23 +120,24 @@ fn handleConnection(context: *Context) void {
 
     const reader = context.stream.reader();
     const uid = reader.readIntNative(os.uid_t) catch |err| {
-        log.err("error reading uid from pam_rundird connection: {}", .{err});
+        log.err("failed to read uid from pam_rundird connection: {}", .{err});
         return;
     };
 
     // Check if the session exists, if not add a new one
-    var it = sessions.first;
-    const session = while (it) |node| : (it = node.next) {
-        if (node.data.uid == uid) break &node.data;
-    } else
-        addSession(uid) catch |err| {
-            log.err("error creating directory: {}", .{err});
+    const session = blk: {
+        var it = sessions.first;
+        while (it) |node| : (it = node.next) {
+            if (node.data.uid == uid) break :blk &node.data;
+        }
+        break :blk addSession(uid) catch |err| {
+            log.err("failed to create directory: {s}", .{@errorName(err)});
             return;
         };
+    };
 
-    const writer = context.stream.writer();
-    writer.writeByte('A') catch |err| {
-        log.err("error sending ack to pam_rundird: {}", .{err});
+    context.stream.writer().writeByte('A') catch |err| {
+        log.err("failed to send ack to pam_rundird: {s}", .{@errorName(err)});
         return;
     };
     session.open_count += 1;
@@ -145,18 +146,18 @@ fn handleConnection(context: *Context) void {
     const bytes_read = reader.read(&buf) catch |err| {
         // Don't want to delete the rundir while it is still in use, so handle
         // this error by "leaking" a session.
-        log.err("error waiting for pam_rundird connection to be closed: {}", .{err});
+        log.err("read from pam_rundird connection failed: {s}", .{@errorName(err)});
         return;
     };
-    std.debug.assert(bytes_read == 0);
+    assert(bytes_read == 0);
     session.open_count -= 1;
     log.info("user {d} has {d} open sessions", .{ uid, session.open_count });
 
     if (session.open_count == 0) {
-        const path = std.fmt.bufPrint(&buf, "{s}/{d}", .{ build_options.rundir_parent, uid }) catch unreachable;
+        const path = fmt.bufPrint(&buf, "{s}/{d}", .{ build_options.rundir_parent, uid }) catch unreachable;
         log.info("deleting {s}", .{path});
         fs.deleteTreeAbsolute(path) catch |err| {
-            log.err("error deleting {s}: {}\n", .{ path, err });
+            log.err("failed to delete {s}: {s}\n", .{ path, @errorName(err) });
         };
 
         const node = @fieldParentPtr(@TypeOf(sessions).Node, "data", session);
@@ -169,7 +170,7 @@ fn addSession(uid: os.uid_t) !*Session {
     const node = try gpa.create(std.SinglyLinkedList(Session).Node);
     errdefer gpa.destroy(node);
 
-    const path = std.fmt.bufPrint(&buf, "{s}/{d}", .{ build_options.rundir_parent, uid }) catch unreachable;
+    const path = fmt.bufPrint(&buf, "{s}/{d}", .{ build_options.rundir_parent, uid }) catch unreachable;
 
     try os.seteuid(uid);
     // Can never fail as we are running as root.

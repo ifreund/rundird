@@ -18,6 +18,7 @@
 
 const build_options = @import("build_options");
 const std = @import("std");
+const fmt = std.fmt;
 const os = std.os;
 
 const c = @cImport({
@@ -59,13 +60,18 @@ fn handleOpen(pamh: *c.pam_handle_t) !void {
             // communication with rundird.
             fd.* = sock.handle;
 
-            // Construct a buffer large enough to contain the full string passed to
-            // pam_putenv() and pre-populated with the compile time known parts.
-            const base = "XDG_RUNTIME_DIR=" ++ build_options.rundir_parent ++ "/";
-            var buf = base.* ++ [1]u8{undefined} ** std.fmt.count("{}\x00", .{std.math.maxInt(os.uid_t)});
-            _ = std.fmt.bufPrint(buf[base.len..], "{}\x00", .{user_info.uid}) catch unreachable;
+            // Add 1 for the 0 terminator
+            const buf_len = comptime 1 + fmt.count("XDG_RUNTIME_DIR={s}/{d}", .{
+                build_options.rundir_parent,
+                std.math.maxInt(os.uid_t),
+            });
+            var buf: [buf_len]u8 = undefined;
+            const path = fmt.bufPrintZ(&buf, "XDG_RUNTIME_DIR={s}/{d}", .{
+                build_options.rundir_parent,
+                user_info.uid,
+            }) catch unreachable;
 
-            if (c.pam_putenv(pamh, &buf) != c.PAM_SUCCESS) return error.PutenvFail;
+            if (c.pam_putenv(pamh, path.ptr) != c.PAM_SUCCESS) return error.PutenvFail;
         },
         else => {
             sock.close();
@@ -79,12 +85,13 @@ export fn pam_sm_close_session(pamh: *c.pam_handle_t, flags: c_int, argc: c_int,
     // nothing to do. An error was already reported in open_session so don't
     // report another.
     var fd: ?*const os.fd_t = undefined;
-    if (c.pam_get_data(pamh, "pam_rundird_fd", @ptrCast(*?*const c_void, &fd)) != c.PAM_SUCCESS)
+    if (c.pam_get_data(pamh, "pam_rundird_fd", @ptrCast(*?*const c_void, &fd)) != c.PAM_SUCCESS) {
         return c.PAM_SUCCESS;
-    if (fd == null or fd.?.* == -1)
+    }
+    if (fd == null or fd.?.* == -1) {
         return c.PAM_SUCCESS;
-
+    }
     // Closing the connection indicates to rundird that the session has closed.
-    std.os.close(fd.?.*);
+    os.close(fd.?.*);
     return c.PAM_SUCCESS;
 }
