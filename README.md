@@ -1,5 +1,8 @@
 # rundird
 
+*Notice: This software is deprecated, I now use
+[dumb_runtime_dir](https://github.com/ifreund/dumb_runtime_dir)*
+
 A simple daemon and PAM module providing the XDG_RUNTIME_DIR of the
 [freedesktop.org base directory spec](https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html).
 
